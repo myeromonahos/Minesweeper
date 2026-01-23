@@ -68,6 +68,7 @@ game_end_time = None
 elapsed_time = 0
 paused_time_total = 0
 pause_time = None
+MAX_GROUP = 12
 
 
 
@@ -372,7 +373,7 @@ def solver_medium(start_x, start_y):
     return True
 
 
-##### advanced solver sub-function - find if a tile is on the frontier 
+##### advanced solver sub-function 1 - find if a tile is on the frontier 
 
 def is_frontier_tile(x, y, revealed, flags):
     if revealed[y][x] or flags[y][x]:
@@ -383,10 +384,10 @@ def is_frontier_tile(x, y, revealed, flags):
             return True
 
     return False
-# a frontier tile is not revealed, not flagged, touches at least one revealed tile with > 0 number
+# a frontier tile is: not revealed, not flagged, touches at least one revealed tile with > 0 number
 
 
-##### advanced solver sub-function - arrange frontier tiles into sets
+##### advanced solver sub-function 2 - arrange frontier tiles into sets
 
 def build_number_to_frontier_map(revealed, flags):
     mapping = {}
@@ -408,7 +409,7 @@ def build_number_to_frontier_map(revealed, flags):
     # where (3,4) is a revealed tile with number > 0. (2,4) & (3,5) are two frontier tiles connected to (3,4)
 
 
-##### advanced solver sub-function - re-arrange frontier tiles from the sets into frontier groups
+##### advanced solver sub-function 3 - re-arrange frontier tiles from the sets into frontier groups
 
 def build_frontier_groups(revealed, flags):
     number_map = build_number_to_frontier_map(revealed, flags)
@@ -443,7 +444,7 @@ def build_frontier_groups(revealed, flags):
     return groups
 
 
-##### advanced solver sub-function - within each frontier group, find the exact number of mines hidden
+##### advanced solver sub-function 4 - within each frontier group, find the exact number of mines hidden
 
 def extract_constraints_for_group(group, revealed, flags):
     constraints = []
@@ -473,9 +474,10 @@ def extract_constraints_for_group(group, revealed, flags):
 
     return constraints
 # constraint = { "tiles": [(3,4), (4,4), (5,4)], "count": 2 }
+#              ...
 
 
-##### advanced solver sub-function - convert "constraint" in an easier format to read for Tufty (indices instead of coordinates)
+##### advanced solver sub-function 5 - convert "constraint" in an easier format to read for Tufty (indices instead of coordinates)
 
 def index_constraints(constraints, index_map):
     indexed = []
@@ -485,12 +487,193 @@ def index_constraints(constraints, index_map):
         indexed.append((idxs, c["count"]))
 
     return indexed
-# indexed = ([1, 2, 3], 2)
+# indexed = ([1, 2, 3], 2)    among tiles 1, 2, 3, there are two traps
+#           ...
 
 
-##### advanced solver sub-function 
+##### advanced solver sub-function 6 - enumerate mine assignments
+
+def enumerate_group(group_size, constraints):
+    valid_masks = []
+
+    for mask in range(1 << group_size): # 1 << group_size = 2^group_size: total nb of possible trap patterns in the group
+        ok = True # assume this patern is correct, then try to falsify it
+
+        for idxs, count in constraints: # among all tiles indexed in idxs, count must be traps
+            c = 0
+            for i in idxs:
+                if mask & (1 << i):
+                    c += 1
+                    # & is bitwise version of AND, so (1 << i) is interpreted as the bit shifter in that case.
+                    # For each tile in idxs, count how many of them are marked as mines in this mask.
+            if c != count:
+                ok = False
+                break
+
+        if ok:
+            valid_masks.append(mask)
+
+    return valid_masks
 
 
+##### advanced solver sub-function 7 - deduction: finds certainly safe and certainly trapped tiles
+
+def deduce_from_masks(masks, group_size):
+    if not masks:
+        return {}, {}
+
+    always_mine = [True] * group_size
+    always_safe = [True] * group_size
+
+    for mask in masks:
+        for i in range(group_size):
+            if mask & (1 << i): # true if i is a mine in this mask
+                always_safe[i] = False # not safe for sure because i is a mine in this mask
+            else:
+                always_mine[i] = False # not trapped for sure because i is not a mine in this mask
+
+    mines = set(i for i in range(group_size) if always_mine[i])
+    safe = set(i for i in range(group_size) if always_safe[i])
+
+    return mines, safe
+
+
+##### advanced solver sub-function 8
+
+def apply_group_deductions(group_tiles, mine_idxs, safe_idxs, flags, revealed):
+    progress = False
+
+    for i in mine_idxs:
+        x, y = group_tiles[i]
+        if not flags[y][x]:
+            flags[y][x] = True
+            progress = True
+
+    for i in safe_idxs:
+        x, y = group_tiles[i]
+        if not revealed[y][x]:
+            revealed[y][x] = True
+            progress = True
+
+    return progress
+
+
+##### advanced solver sub-function 9
+
+def solve_frontier_group(group, revealed, flags):
+    group_tiles = list(group)
+    if len(group_tiles) > MAX_GROUP:
+        return False
+
+    index = {t: i for i, t in enumerate(group_tiles)}
+
+    constraints = extract_constraints_for_group(group, revealed, flags)
+    indexed = index_constraints(constraints, index)
+
+    masks = enumerate_group(len(group_tiles), indexed)
+    if not masks:
+        return False
+
+    mines, safe = deduce_from_masks(masks, len(group_tiles))
+    return apply_group_deductions(group_tiles, mines, safe, flags, revealed)
+
+
+##### advanced solver main
+
+def solver_advanced(start_x, start_y):
+    s_revealed = [[False for _ in range(GRID_W)] for _ in range(GRID_H)]
+    s_flags = [[False for _ in range(GRID_W)] for _ in range(GRID_H)]
+
+    stack = [(start_x, start_y)]
+
+    # Rule 1: flood reveal
+    while stack:
+        x, y = stack.pop()
+        if s_revealed[y][x]:
+            continue
+        if mines[y][x]:
+            return False
+
+        s_revealed[y][x] = True
+
+        if numbers[y][x] == 0:
+            for nx, ny in get_neighbours(x, y):
+                if not s_revealed[ny][nx]:
+                    stack.append((nx, ny))
+
+    progress = True
+
+    while progress:
+        progress = False
+
+        # ---- Basic rules (2 & 3) ----
+        for y in range(GRID_H):
+            for x in range(GRID_W):
+                if not s_revealed[y][x]:
+                    continue
+                if numbers[y][x] == 0:
+                    continue
+
+                hidden = []
+                flagged = 0
+
+                for nx, ny in get_neighbours(x, y):
+                    if s_flags[ny][nx]:
+                        flagged += 1
+                    elif not s_revealed[ny][nx]:
+                        hidden.append((nx, ny))
+
+                # Rule 2: all hidden are mines
+                if hidden and numbers[y][x] == flagged + len(hidden):
+                    for nx, ny in hidden:
+                        if not s_flags[ny][nx]:
+                            s_flags[ny][nx] = True
+                            progress = True
+
+                # Rule 3: all hidden are safe
+                if hidden and numbers[y][x] == flagged:
+                    for nx, ny in hidden:
+                        if not s_revealed[ny][nx]:
+                            s_revealed[ny][nx] = True
+                            progress = True
+                            if numbers[ny][nx] == 0:
+                                stack.append((nx, ny))
+
+        # ---- Subset rule (rule 4) ----
+        for y1 in range(GRID_H):
+            for x1 in range(GRID_W):
+                if not s_revealed[y1][x1]:
+                    continue
+                if numbers[y1][x1] == 0:
+                    continue
+
+                for x2, y2 in get_neighbours(x1, y1):
+                    if not s_revealed[y2][x2]:
+                        continue
+                    if numbers[y2][x2] == 0:
+                        continue
+
+                    made, newly = apply_subset_rule(x1, y1, x2, y2, s_revealed, s_flags)
+                    if made:
+                        progress = True
+                        for x, y in newly:
+                            if numbers[y][x] == 0:
+                                stack.append((x, y))
+
+        # ---- Frontier group solver (rule 5) ----
+        frontier_groups = build_frontier_groups(s_revealed, s_flags)
+
+        for group in frontier_groups:
+            if solve_frontier_group(group, s_revealed, s_flags):
+                progress = True
+
+    # Final check: all safe tiles revealed?
+    for y in range(GRID_H):
+        for x in range(GRID_W):
+            if not mines[y][x] and not s_revealed[y][x]:
+                return False
+
+    return True
 
 
 #################### Instructions ####################  
@@ -743,13 +926,13 @@ def difficulty_q_solver():
     display.text("Which difficulty level would", 20, 40, scale=2)
     display.text("you like ?", 20, 70, scale=2)
 
-    options = ["Easy", "Medium"]
+    options = ["Easy", "Medium", "Difficult"]
     selected_option = 0
     pressed = False
 
     while True:
         display.set_pen(BLACK)
-        display.rectangle(0, 100, WIDTH, 100)
+        display.rectangle(0, 100, WIDTH, 130)
         
         if selected_option == 0:
             display.set_pen(GREEN)
@@ -757,23 +940,30 @@ def difficulty_q_solver():
             display.set_pen(GREEN // 2)
             display.text("Medium", 125, 160, scale=2)
             display.set_pen(GREEN // 2)
-            display.text("Difficult (not ready yet)", 40, 200, scale=2)
-        else:
+            display.text("Difficult", 125, 200, scale=2)
+        elif selected_option == 1:
             display.set_pen(GREEN // 2)
             display.text("Easy", 125, 120, scale=2)
             display.set_pen(GREEN)
             display.text("> Medium", 125, 160, scale=2)
             display.set_pen(GREEN // 2)
-            display.text("Difficult (not ready yet)", 40, 200, scale=2)
+            display.text("Difficult", 125, 200, scale=2)
+        elif selected_option == 2:
+            display.set_pen(GREEN // 2)
+            display.text("Easy", 125, 120, scale=2)
+            display.set_pen(GREEN // 2)
+            display.text("Medium", 125, 160, scale=2)
+            display.set_pen(GREEN)
+            display.text("> Difficult", 125, 200, scale=2)
 
         display.update()
         
         if button_down.read():
-            selected_option = (selected_option - 1) % len(options)
+            selected_option = (selected_option + 1) % len(options)
             time.sleep(0.02)
             
         if button_up.read():
-            selected_option = (selected_option + 1) % len(options)
+            selected_option = (selected_option - 1) % len(options)
             time.sleep(0.02)
 
         if button_reveal.read():
@@ -786,6 +976,9 @@ def difficulty_q_solver():
             
             if options[selected_option] == "Medium":
                 return "medium"
+            
+            if options[selected_option] == "Difficult":
+                return "difficult"
 
 
 ##### question about using flood reveal
@@ -1299,6 +1492,19 @@ while True:
                             display.text(f"solver attempts {solver_count}", 5, 200, scale=2)
                             display.update()
                             if not solver_basic(cursor_x, cursor_y) and solver_medium(cursor_x, cursor_y):
+                                break
+                            
+                        elif difficulty == "difficult":
+                            display.set_pen(BLACK)
+                            display.rectangle(4, 199, WIDTH, 100)
+                            display.set_pen(ORANGE)
+                            display.text(f"solver attempts {solver_count}", 5, 200, scale=2)
+                            display.update()
+                            
+                            # Must fail easy & medium, but pass advanced
+                            if (not solver_basic(cursor_x, cursor_y)
+                                and not solver_medium(cursor_x, cursor_y)
+                                and solver_advanced(cursor_x, cursor_y)):
                                 break
                         
                 if not use_solver:
