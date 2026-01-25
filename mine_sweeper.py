@@ -89,7 +89,7 @@ def place_mines_avoiding(cx, cy):
             continue
 
         if not mines[y][x]:
-            if too_close(x, y) and random.random() < 0.9:
+            if too_close(x, y) and random.random() < 0.8:
                 continue
             mines[y][x] = True
             placed += 1
@@ -480,12 +480,19 @@ def extract_constraints_for_group(group, revealed, flags):
 ##### advanced solver sub-function 5 - convert "constraint" in an easier format to read for Tufty (indices instead of coordinates)
 
 def index_constraints(constraints, index_map):
+#    indexed = []
+#
+#    for c in constraints:
+#        idxs = [index_map[t] for t in c["tiles"]]
+#        indexed.append((idxs, c["count"]))
+#
+#    return indexed
     indexed = []
-
     for c in constraints:
-        idxs = [index_map[t] for t in c["tiles"]]
-        indexed.append((idxs, c["count"]))
-
+        m = 0
+        for t in c["tiles"]:
+            m |= (1 << index_map[t])
+        indexed.append((m, c["count"]))
     return indexed
 # indexed = ([1, 2, 3], 2)    among tiles 1, 2, 3, there are two traps
 #           ...
@@ -493,20 +500,43 @@ def index_constraints(constraints, index_map):
 
 ##### advanced solver sub-function 6 - enumerate mine assignments
 
+#def enumerate_group(group_size, constraints):
+#    valid_masks = []
+#
+#    for mask in range(1 << group_size): # 1 << group_size = 2^group_size: total nb of possible trap patterns in the group
+#        ok = True # assume this patern is correct, then try to falsify it
+#
+#        for idxs, count in constraints: # among all tiles indexed in idxs, count must be traps
+#            c = 0
+#            for i in idxs:
+#                if mask & (1 << i):
+#                    c += 1
+#                    # & is bitwise version of AND, so (1 << i) is interpreted as the bit shifter in that case.
+#                    # For each tile in idxs, count how many of them are marked as mines in this mask.
+#            if c != count:
+#                ok = False
+#                break
+#
+#        if ok:
+#            valid_masks.append(mask)
+#
+#    return valid_masks
+def popcount(x):
+    c = 0
+    while x:
+        x &= x - 1   # drop lowest set bit
+        c += 1
+    return c
 def enumerate_group(group_size, constraints):
     valid_masks = []
 
-    for mask in range(1 << group_size): # 1 << group_size = 2^group_size: total nb of possible trap patterns in the group
-        ok = True # assume this patern is correct, then try to falsify it
+    # constraints is already: [(cmask, count), ...]
 
-        for idxs, count in constraints: # among all tiles indexed in idxs, count must be traps
-            c = 0
-            for i in idxs:
-                if mask & (1 << i):
-                    c += 1
-                    # & is bitwise version of AND, so (1 << i) is interpreted as the bit shifter in that case.
-                    # For each tile in idxs, count how many of them are marked as mines in this mask.
-            if c != count:
+    for mask in range(1 << group_size):
+        ok = True
+
+        for cmask, count in constraints:
+            if popcount(mask & cmask) != count:
                 ok = False
                 break
 
@@ -586,7 +616,7 @@ def solver_advanced(start_x, start_y):
 
     stack = [(start_x, start_y)]
 
-    # Rule 1: flood reveal
+    # rule 1
     while stack:
         x, y = stack.pop()
         if s_revealed[y][x]:
@@ -606,7 +636,7 @@ def solver_advanced(start_x, start_y):
     while progress:
         progress = False
 
-        # ---- Basic rules (2 & 3) ----
+        # rules 2 & 3
         for y in range(GRID_H):
             for x in range(GRID_W):
                 if not s_revealed[y][x]:
@@ -623,14 +653,14 @@ def solver_advanced(start_x, start_y):
                     elif not s_revealed[ny][nx]:
                         hidden.append((nx, ny))
 
-                # Rule 2: all hidden are mines
+                # rule 2
                 if hidden and numbers[y][x] == flagged + len(hidden):
                     for nx, ny in hidden:
                         if not s_flags[ny][nx]:
                             s_flags[ny][nx] = True
                             progress = True
 
-                # Rule 3: all hidden are safe
+                # rule 3
                 if hidden and numbers[y][x] == flagged:
                     for nx, ny in hidden:
                         if not s_revealed[ny][nx]:
@@ -639,7 +669,7 @@ def solver_advanced(start_x, start_y):
                             if numbers[ny][nx] == 0:
                                 stack.append((nx, ny))
 
-        # ---- Subset rule (rule 4) ----
+        # rule 4
         for y1 in range(GRID_H):
             for x1 in range(GRID_W):
                 if not s_revealed[y1][x1]:
@@ -660,14 +690,13 @@ def solver_advanced(start_x, start_y):
                             if numbers[y][x] == 0:
                                 stack.append((x, y))
 
-        # ---- Frontier group solver (rule 5) ----
-        frontier_groups = build_frontier_groups(s_revealed, s_flags)
+        # rule 5 - frontiere grouping
+        if not progress:
+            frontier_groups = build_frontier_groups(s_revealed, s_flags)
+            for group in frontier_groups:
+                if solve_frontier_group(group, s_revealed, s_flags):
+                    progress = True
 
-        for group in frontier_groups:
-            if solve_frontier_group(group, s_revealed, s_flags):
-                progress = True
-
-    # Final check: all safe tiles revealed?
     for y in range(GRID_H):
         for x in range(GRID_W):
             if not mines[y][x] and not s_revealed[y][x]:
